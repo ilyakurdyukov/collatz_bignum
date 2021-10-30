@@ -53,6 +53,9 @@ static int64_t get_time_usec() {
 	return time.tv_sec * (int64_t)1000000 + time.tv_usec;
 }
 
+// slower (could be faster if memory access becomes a bottleneck)
+//#define MULT_T2
+
 #ifdef NBITS
 #define N NBITS
 #else
@@ -90,6 +93,16 @@ static void bignum_init(bignum_t *bn) {
 	bn->max = bn->inc = BLOCKBYTES / sizeof(T);
 	bn->buf = (T*)malloc(BLOCKBYTES);
 }
+
+#if 0
+static void* bignum_clone(bignum_t *bn, bignum_t *bn2) {
+	uint8_t *buf = (uint8_t*)malloc(bn->max * sizeof(T));
+	*bn2 = *bn;
+	bn2->buf = (T*)buf;
+	if (buf) memcpy(buf, bn->buf, bn->cur * sizeof(T));
+	return buf;
+}
+#endif
 
 static void* bignum_alloc(bignum_t *bn, size_t n) {
 	size_t align = BLOCKBYTES, max = (n + align - 1) & -align;
@@ -259,6 +272,39 @@ static void bignum_shrN_mul_add(bignum_t *bn, size_t shr, T mul, T add) {
 #undef PART1
 		} else
 #endif
+#if 1 && defined(__GNUC__) && defined(__x86_64__) && defined(__BMI2__) && N == 64
+		{
+			T2 tmp = (buf[i] & (T)((T)-1 << k)) * (T2)mul + ((T2)add << k);
+			T *data = buf, count = n - i, low = tmp, t0, t1;
+			add = tmp >> N;
+			__asm__ __volatile__(
+				"shr	%3\n"
+				"mov	%0, %4\n"
+				"mov	%1, %5\n"
+				"jnc	2f\n"
+				"test	%3, %3\n" /* cf=0 */
+				"lea	8(%2), %2\n"
+				"je 3f\n"
+				".p2align 4\n"
+			"1:\n"
+				"mulx	-8(%2,%6,8), %4, %5\n"
+				"mov	%0, -8(%2)\n"
+				"adc	%1, %4\n"
+			"2:\n"
+				"mulx	(%2,%6,8), %0, %1\n"
+				"mov	%4, (%2)\n"
+				"lea	16(%2), %2\n"
+				"adc	%5, %0\n"
+				"dec	%3\n"
+				"jne	1b\n"
+				"adc	%3, %1\n"
+			"3:\n"
+				"mov	%0, -8(%2)\n"
+			: "+r"(low), "+r"(add), "+r"(data), "+r"(count), "=&r"(t0), "=&r"(t1)
+			: "r"(i + 1), "d"(mul) : "memory");
+			j = n - i;
+		}
+#else
 		{
 			// note: shift optimization leaves (shr % N) binary zeros at the beginning
 			T2 tmp = (buf[i++] & (T)((T)-1 << k)) * (T2)mul + ((T2)add << k);
@@ -270,6 +316,7 @@ static void bignum_shrN_mul_add(bignum_t *bn, size_t shr, T mul, T add) {
 			buf[j++] = (T)tmp;
 			add = tmp >> N;
 		}
+#endif
 	}
 	if (LIKELY(add)) {
 		size_t max = bn->max;
@@ -285,6 +332,107 @@ static void bignum_shrN_mul_add(bignum_t *bn, size_t shr, T mul, T add) {
 	}
 	bn->cur = j;
 }
+
+#ifdef MULT_T2
+
+/* Aa*Bb = (A*B<<N*2)+(A*b<<N)+(a*B<<N)+a*b */
+
+#define mulT2xT2(al, ah, bl, bh, l0, l1, hi) { \
+	T2 _t0 = (T2)al * bl, _t1 = (T2)ah * bl + (T)(_t0 >> N); \
+	T2 _t2 = (T2)al * bh, _t3 = (T2)ah * bh + (T)(_t2 >> N); \
+	l0 = _t0; \
+	l1 = _t0 = (T2)(T)_t1 + (T)_t2; \
+	hi = (_t3 + (T)(_t1 >> N)) + (T)(_t0 >> N); \
+}
+
+#define mulT2xT(al, ah, bl, lo, hi) { \
+	T2 _t0 = (T2)al * bl; \
+	lo = _t0; hi = (T2)ah * bl + (T)(_t0 >> N); \
+}
+
+void bignum_shrN_mul2_add2(bignum_t *bn, size_t shr, T2 mul2, T2 add2) {
+	size_t i = shr / N, j = 0, n = bn->cur;
+	T *buf = bn->buf;
+	unsigned k = shr & (N - 1);
+	T m0 = mul2, m1 = mul2 >> N, t0, l0; T2 hi, tmp;
+	if (LIKELY(i < n)) {
+		t0 = buf[i++] & (T)((T)-1 << k);
+		mulT2xT(m0, m1, t0, l0, hi)
+		tmp = (T2)l0 + ((T)add2 << k);
+		add2 = hi + (add2 >> (N - k)) + (T)(tmp >> N);
+#if 1 && defined(__GNUC__) && defined(__x86_64__) && defined(__BMI2__) && N == 64
+		t0 = tmp;
+		{
+			T *data = buf, a0 = add2, a1 = add2 >> N;
+			T count = n - i + 1, t2, t3;
+			__asm__ __volatile__(
+				"shr	%[n]\n"
+				"mov	%[a0], %[t2]\n"
+				"mov	%[a1], %[t3]\n"
+				"jnc	2f\n"
+				"test	%[n], %[n]\n" /* cf=0 */
+				"lea	8(%[p]), %[p]\n"
+				"je 3f\n"
+				".p2align 4\n"
+			"1:\n"
+				"mov	-8(%[p], %[in]), %%rdx\n"
+				"mov	%[t0], -8(%[p])\n"
+				"mulx	%[m0], %[t0], %[t2]\n"
+				"mulx	%[m1], %%rdx, %[t3]\n"
+				"adc	%%rdx, %[t2]\n"
+				"adc	$0, %[t3]\n"
+				"add	%[a0], %[t0]\n"
+				"adc	%[a1], %[t2]\n"
+			"2:\n"
+				"mov	(%[p], %[in]), %%rdx\n"
+				"mov	%[t0], (%[p])\n"
+				"mulx	%[m0], %[t0], %[a0]\n"
+				"mulx	%[m1], %%rdx, %[a1]\n"
+				"lea	16(%[p]), %[p]\n"
+				"adc	%%rdx, %[a0]\n"
+				"adc	$0, %[a1]\n"
+				"add	%[t2], %[t0]\n"
+				"adc	%[t3], %[a0]\n"
+				"dec	%[n]\n"
+				"jne	1b\n"
+				"adc	%[n], %[a1]\n"
+			"3:\n"
+				"mov	%[t0], -8(%[p])\n"
+			: [p] "+r"(data), [a0] "+r"(a0), [a1] "+r"(a1), [n] "+r" (count),
+			[t0] "+r"(t0), [t2] "=&r"(t2), [t3] "=&r"(t3)
+			: [m0] "r"(m0), [m1] "r"(m1),
+			[in] "r"(i << 3) : "memory", "rdx");
+			add2 = (T2)a1 << N | a0;
+			j = n - i + 1;
+		}
+#else
+		buf[j++] = tmp;
+		while (LIKELY(i < n)) {
+			t0 = buf[i++];
+			mulT2xT(m0, m1, t0, l0, hi)
+			tmp = (T2)l0 + (T)add2;
+			buf[j++] = tmp;
+			add2 = (hi + (T)(add2 >> N)) + (T)(tmp >> N);
+		}
+#endif
+	}
+	if (LIKELY(add2)) {
+		size_t max = bn->max;
+		if (UNLIKELY(j + 1 >= max)) {
+			bn->max = max += bn->inc;
+			bn->buf = buf = (T*)realloc(buf, max * sizeof(T));
+			if (UNLIKELY(!buf)) {
+				printf("!!! realloc failed\n");
+				exit(1);
+			}
+		}
+		buf[j++] = add2;
+		t0 = add2 >> N;
+		if (t0) buf[j++] = t0;
+	}
+	bn->cur = j;
+}
+#endif
 
 static size_t bignum_ctz(bignum_t *bn, int *end) {
 	size_t i = 0, k = 0, n = bn->cur;
@@ -417,6 +565,11 @@ int main(int argc, char **argv) {
 			int end; size_t shr, pos;
 			int inc = 1; T mul = 3, add = 1;
 
+			if (UNLIKELY(i++ >= 25000)) {
+				i = 0;
+				printf("bytes: %ld\n", (long)bn.cur * sizeof(T));
+			}
+
 			div2 += shr = bignum_ctz(&bn, &end);
 			pos = shr / N;
 			if (UNLIKELY(end)) break;
@@ -446,16 +599,35 @@ int main(int argc, char **argv) {
 						bits |= (T2)bn.buf[pos] << (N - k);
 					}
 				}
+#ifdef MULT_T2
+				if (pos + 2 < bn.cur) {
+					T2 mul2 = mul, add2 = add;
+
+					while (LIKELY(inc < (N / 8) * 10)) {
+						T2 x;
+						add2 += mul2 & -(T2)(bits & 1); bits >>= 1;
+						x = add2 & 1;
+						inc += x; mul2 += (mul2 << 1) & -x;
+						add2 = (add2 >> 1) + ((add2 + 1) & -x);
+						if (UNLIKELY(!(++i & (N - 1)))) {
+							if (UNLIKELY(pos + 2 >= bn.cur)) break;
+							bits = bn.buf[pos++] >> k;
+							bits |= (T2)bn.buf[pos] << (N - k);
+						}
+					}
+					div2 += i; shr += i;
+					mul3 += inc;
+					div2 -= shr & (N - 1);	// compensation
+					bignum_shrN_mul2_add2(&bn, shr, mul2, add2);
+					continue;
+				}
+#endif
 				div2 += i; shr += i;
 #endif
 			}
 			mul3 += inc;
 			div2 -= shr & (N - 1);	// compensation
 			bignum_shrN_mul_add(&bn, shr, mul, add);
-			if (UNLIKELY(++i >= 25000)) {
-				i = 0;
-				printf("bytes: %ld\n", (long)bn.cur * sizeof(T));
-			}
 		}
 		printf("mul3 = %lld, div2 = %lld, total = %lld\n", mul3, div2, mul3 + div2);
 		t1 = get_time_usec();
