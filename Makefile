@@ -4,6 +4,8 @@ SRCNAME := main.c
 
 MFLAGS := -march=native
 CFLAGS := -Wall -Wextra -O3 $(MFLAGS)
+SFLAGS := -fno-asynchronous-unwind-tables -masm=intel
+PROF_ARGS := --ones 100000
 CLANG := 0
 
 .PHONY: clean all profile check
@@ -16,9 +18,12 @@ clean:
 $(APPNAME): $(SRCNAME)
 	$(CC) -DAPPNAME=$(APPNAME) $(CFLAGS) -s -o $@ $<
 
+$(APPNAME).s: $(SRCNAME)
+	$(CC) -DAPPNAME=$(APPNAME) $(CFLAGS) $(SFLAGS) -S -o $@ $<
+
 profile:
 	@$(MAKE) --no-print-directory MFLAGS="$(MFLAGS) -fprofile-generate" $(APPNAME)
-	./$(APPNAME) --lut 20 --ones 100000
+	./$(APPNAME) $(PROF_ARGS)
 	rm $(APPNAME)
 ifneq ($(CLANG),0)
 	llvm-profdata merge -output=default.profdata *.profraw

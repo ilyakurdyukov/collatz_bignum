@@ -10,7 +10,7 @@ If you're lucky to find a number that proves that Collatz Conjecture is false (o
 
 1. `make all`  
 default build
-2. `make profile`  
+2. `make profile PROF_ARGS="--ones 1000000"`  
 build with the profile-guided optimizations using GCC (add CLANG=1 when using Clang)
 
 * `make check` for a simple build check.
@@ -18,15 +18,38 @@ build with the profile-guided optimizations using GCC (add CLANG=1 when using Cl
 
 ## Usage
 
-`collatz_test [--lut 1..26] mode {num|file}`
+`collatz_test [--lut 1..26] [mode] {num|file}`
 
 ## Options
 
 `--lut N` builds a lookup table to speed up the process by a factor of N (default 20). LUT consumes `2^n * 3 * NBITS/8` bytes of memory. The LUT depth is also limited to `5 * NBITS/8`.
 
+* Doesn't affect performance in the latest version with dynamic expansion of LUT values.
+
 ## Modes
 
-`--num` read decimal number from command line  
+`--num` read decimal number from command line (default)  
 `--file` load specified file as a little endian number  
 `--ones` test 2^n-1  
+
+## Example
+
+	$ ./collatz_test 989345275647
+	mul3 = 506, div2 = 842, total = 1348
+	$ ./collatz_test 0xffffffff
+	mul3 = 162, div2 = 289, total = 451
+	$ ./collatz_test --ones 1000000
+	lut: 0.016s
+	bytes: 198128
+	bytes: 145760
+	bytes: 94000
+	bytes: 41896
+	mul3 = 4805005, div2 = 8615753, total = 13420758
+	time: 1.155s
+	$ head -c100000 /dev/urandom > random.bin
+	$ ./collatz_test --file random.bin
+	lut: 0.016s
+	bytes: 47936
+	mul3 = 1923602, div2 = 3848837, total = 5772439
+	time: 0.213s
 
