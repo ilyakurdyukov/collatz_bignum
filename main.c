@@ -124,23 +124,21 @@ static void* bignum_read(bignum_t *bn, const char *fn) {
 	return bn->buf;
 }
 
-#define bignum_mul_add(x, a, b) bignum_shr_mul_add(x, 0, a, b)
-static void bignum_shr_mul_add(bignum_t *bn, size_t shr, T mul, T add) {
+#define bignum_mul_add(x, a, b) bignum_shrN_mul_add(x, 0, a, b)
+static void bignum_shrN_mul_add(bignum_t *bn, size_t shr, T mul, T add) {
 	size_t i = shr / N, j = 0, n = bn->cur;
-	T *buf = bn->buf, x;
+	T *buf = bn->buf;
 	unsigned k = shr & (N - 1);
-	x = buf[i++] >> k;
-	while (LIKELY(i < n)) {
-		T2 tmp = (T2)buf[i++] << (N - k) | x;
-		x = tmp >> N;
-		tmp = (T)tmp * (T2)mul + add;
+	if (LIKELY(i < n)) {
+		// note: shift optimization leaves (shr % N) binary zeros at the beginning
+		T2 tmp = (buf[i++] & (T)((T)-1 << k)) * (T2)mul + ((T2)add << k);
 		buf[j++] = (T)tmp;
 		add = tmp >> N;
-	}
-	if (LIKELY(x)) {
-		T2 tmp = x * (T2)mul + add;
-		buf[j++] = (T)tmp;
-		add = tmp >> N;
+		while (LIKELY(i < n)) {
+			T2 tmp = buf[i++] * (T2)mul + add;
+			buf[j++] = (T)tmp;
+			add = tmp >> N;
+		}
 	}
 	if (LIKELY(add)) {
 		size_t max = bn->max;
@@ -269,27 +267,25 @@ int main(int argc, char **argv) {
 		int i = 0;
 
 		for (;;) {
-			T x; int end; size_t shr;
+			int end; size_t shr;
 			int inc = 1; T mul = 3, add = 1;
 
 			div2 += shr = bignum_ctz(&bn, &end);
 			if (UNLIKELY(end)) break;
-			{
+			if (LIKELY(shr / N + 2 < bn.cur)) {
 				size_t i = shr / N;
 				unsigned k = shr & (N - 1);
-				x = bn.buf[i++] >> k;
-				if (LIKELY(i < bn.cur)) x |= (T2)bn.buf[i] << (N - k);
-			}
-			x = (x & ((1 << lut) - 1)) >> 1;
-
-			if (LIKELY(shr / N + 2 < bn.cur)) {
+				T bits = bn.buf[i++] >> k;
+				bits |= (T2)bn.buf[i] << (N - k);
+				i = (bits & ((1 << lut) - 1)) >> 1;
+				mul = lut_ptr[i].mul;
+				add = lut_ptr[i].add;
+				inc = lut_ptr[i].inc;
 				div2 += lut; shr += lut;
-				mul = lut_ptr[x].mul;
-				add = lut_ptr[x].add;
-				inc = lut_ptr[x].inc;
 			}
 			mul3 += inc;
-			bignum_shr_mul_add(&bn, shr, mul, add);
+			div2 -= shr & (N - 1);	// compensation
+			bignum_shrN_mul_add(&bn, shr, mul, add);
 			if (UNLIKELY(++i >= 25000)) {
 				i = 0;
 				printf("bytes: %ld\n", (long)bn.cur * sizeof(T));
