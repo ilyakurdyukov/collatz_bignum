@@ -118,7 +118,7 @@ static void bignum_prepare(bignum_t *bn, size_t n) {
 	union { T i; uint8_t b; } check = { 1 };
 	size_t i, k;
 	uint8_t *buf = (uint8_t*)bn->buf;
-	while (n > 1 && !buf[n - 1]) n--;
+	while (n && !buf[n - 1]) n--;
 	k = n & (sizeof(T) - 1);
 	if (k) memset(buf + n, 0, sizeof(T) - k);
 	bn->cur = (n + sizeof(T) - 1) / sizeof(T);
@@ -300,7 +300,7 @@ static void bignum_shrN_mul_add(bignum_t *bn, size_t shr, T mul, T add) {
 				"adc	%3, %1\n"
 			"3:\n"
 				"mov	%0, -8(%2)\n"
-			: "+r"(low), "+r"(add), "+r"(data), "+r"(count), "=&r"(t0), "=&r"(t1)
+			: "+&r"(low), "+&r"(add), "+&r"(data), "+&r"(count), "=&r"(t0), "=&r"(t1)
 			: "r"(i + 1), "d"(mul) : "memory");
 			j = n - i;
 		}
@@ -398,8 +398,8 @@ void bignum_shrN_mul2_add2(bignum_t *bn, size_t shr, T2 mul2, T2 add2) {
 				"adc	%[n], %[a1]\n"
 			"3:\n"
 				"mov	%[t0], -8(%[p])\n"
-			: [p] "+r"(data), [a0] "+r"(a0), [a1] "+r"(a1), [n] "+r" (count),
-			[t0] "+r"(t0), [t2] "=&r"(t2), [t3] "=&r"(t3)
+			: [p] "+&r"(data), [a0] "+&r"(a0), [a1] "+&r"(a1), [n] "+&r" (count),
+			[t0] "+&r"(t0), [t2] "=&r"(t2), [t3] "=&r"(t3)
 			: [m0] "r"(m0), [m1] "r"(m1),
 			[in] "r"(i << 3) : "memory", "rdx");
 			add2 = (T2)a1 << N | a0;
