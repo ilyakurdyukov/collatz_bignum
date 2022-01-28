@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 Ilya Kurdyukov
+ * Copyright (C) 2021, 2022 Ilya Kurdyukov
  *
  * Optimized Collatz Conjecture tester.
  *
@@ -163,7 +163,12 @@ static void bignum_shrN_mul_add(bignum_t *bn, size_t shr, T mul, T add) {
 // _mm256_zextsi128_si256 doesn't supported in GCC < 10
 // in this code v3 can't have a dirty high half
 #if __GNUC__ < 10
+#if defined(__i386__) || defined(__x86_64__)
 #define _mm256_zextsi128_si256 _mm256_castsi128_si256
+#else
+// but on architectures that emulate x86 intrinsics, it is unsafe to use the cast 
+#define _mm256_zextsi128_si256(a) _mm256_inserti128_si256(_mm256_setzero_si256(), a, 0)
+#endif
 #endif
 #endif
 		if (LIKELY(i + 7 < n)) {
